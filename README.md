@@ -9,11 +9,12 @@
 
 ## セットアップ
 ```bash
+cd AI_Agent
 nvm use 20.17.0
 npm install
 npm ci
 npm run dev
-# http://localhost:3000/studio
+# http://localhost:3000/studio ←このページを開いたらAIが出てくる
 ```
 
 ## 環境変数 (.env.local)
