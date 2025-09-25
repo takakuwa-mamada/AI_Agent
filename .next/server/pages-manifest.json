@@ -1,0 +1,8 @@
+{
+  "/_app": "pages/_app.js",
+  "/_error": "pages/_error.js",
+  "/_document": "pages/_document.js",
+  "/studio": "pages/studio.js",
+  "/api/ai/chat": "pages/api/ai/chat.js",
+  "/api/voicevox/tts": "pages/api/voicevox/tts.js"
+}
