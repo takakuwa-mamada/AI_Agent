@@ -77,7 +77,7 @@ npm run dev
 
 サーバーが `http://localhost:4111` で起動します。
 
-#### ターミナル2: Next.jsアプリケーション
+#### ターミナル2: Next.jsアプリケーション(プロジェクト直下でOK)
 
 ```bash
 npm run dev

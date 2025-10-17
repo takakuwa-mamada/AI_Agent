@@ -1,14 +1,42 @@
+/**
+ * Live2D + VOICEVOX + AI チャットの統合UIコンポーネント
+ * 
+ * このファイルは、アプリケーションのメインUIを構成し、以下の機能を統合します:
+ * 1. Live2Dキャラクターの表示とアニメーション
+ * 2. VOICEVOXによる音声合成とリップシンク
+ * 3. AIチャット機能（Gemini API経由）
+ * 4. 表情制御（感情タグベース）
+ * 
+ * カスタマイズポイント:
+ * - MODEL_URL: 使用するLive2Dモデルのパス
+ * - リップシンクパラメータ（Attack, Decay, Gain, Gate）
+ * - Speaker ID（VOICEVOXの話者）
+ */
+
 import React, { useEffect, useRef, useState } from 'react';
 import { playVoiceVox, resumeAudio, stopPlayback } from '../lib/tts';
 import { Emotion, parseLeadingEmotionTag, getExpressionCandidates, pickOne } from '../lib/emotion';
 
+// Live2Dモデルファイルのパス
+// カスタマイズ: .env.localでNEXT_PUBLIC_SELECTED_LIVE2D_PATHを設定するか、
+//              ここのデフォルト値を変更してください
 const MODEL_URL =
   process.env.NEXT_PUBLIC_SELECTED_LIVE2D_PATH ||
   'live2d/hijiki/hijiki.model3.json';
 
+/**
+ * ブラウザのlocalStorageに状態を永続化するカスタムフック
+ * 
+ * @param key - localStorageのキー
+ * @param initial - 初期値
+ * @returns [値, セッター関数] のタプル（useStateと同じインターフェース）
+ * 
+ * 用途: リップシンクのパラメータや話者IDなど、ユーザー設定を保存
+ */
 function usePersistentState<T>(key: string, initial: T) {
   const [v, setV] = useState<T>(initial);
 
+  // コンポーネントのマウント時にlocalStorageから読み込み
   useEffect(() => {
     try {
       const raw = localStorage.getItem(key);
@@ -16,6 +44,7 @@ function usePersistentState<T>(key: string, initial: T) {
     } catch {}
   }, [key]);
 
+  // 値が変更されたらlocalStorageに保存
   useEffect(() => {
     try {
       localStorage.setItem(key, JSON.stringify(v));
@@ -25,10 +54,22 @@ function usePersistentState<T>(key: string, initial: T) {
   return [v, setV] as const;
 }
 
+/**
+ * Live2D Cubism Coreライブラリが読み込まれているかチェック
+ */
 function hasCubismCore(): boolean {
   return typeof (globalThis as any).Live2DCubismCore !== 'undefined';
 }
 
+/**
+ * Live2D Cubism Coreライブラリを動的に読み込む
+ * 
+ * public/scripts/live2dcubismcore.min.js を動的に読み込みます。
+ * このファイルは必須で、Live2Dモデルを表示するために必要です。
+ * 
+ * カスタマイズポイント:
+ * - スクリプトのパスを変更する場合は s.src を修正
+ */
 async function ensureCubismCore(): Promise<void> {
   if (hasCubismCore()) return;
 
@@ -43,7 +84,7 @@ async function ensureCubismCore(): Promise<void> {
 
     const s = document.createElement('script');
     s.id = id;
-    s.src = '/scripts/live2dcubismcore.min.js';
+    s.src = '/scripts/live2dcubismcore.min.js';  // Cubism Coreのパス
     s.async = false;
     s.onload = () => resolve();
     s.onerror = () => reject(new Error('Failed to load live2dcubismcore.min.js'));
@@ -53,6 +94,22 @@ async function ensureCubismCore(): Promise<void> {
   if (!hasCubismCore()) throw new Error('Live2DCubismCore not found after script load');
 }
 
+/**
+ * Live2Dモデルから口パク用のパラメータIDを自動検出する
+ * 
+ * @param model - Live2Dモデルインスタンス
+ * @returns 口パク用のパラメータID（例: 'ParamMouthOpenY'）
+ * 
+ * 処理の流れ:
+ * 1. モデルの全パラメータIDを取得
+ * 2. 優先リストから最初に見つかったものを使用
+ * 3. 見つからない場合は正規表現で "mouth" + "open" を検索
+ * 4. それでも見つからなければデフォルト値を返す
+ * 
+ * カスタマイズポイント:
+ * - preferred: モデルに合わせて優先パラメータ名を変更
+ * - 特定のモデルで固定のパラメータIDを使いたい場合は、直接返り値を指定
+ */
 function detectMouthParamId(model: any): string {
   const core = model?.internalModel?.coreModel;
   try {
@@ -63,9 +120,12 @@ function detectMouthParamId(model: any): string {
       if (id) ids.push(String(id));
     }
 
+    // 優先的に検索するパラメータ名のリスト
+    // カスタマイズ: 使用するモデルに合わせて調整してください
     const preferred = ['ParamMouthOpenY', 'MouthOpenY', 'PARAM_MOUTH_OPEN_Y', 'MOUTH_OPEN_Y', 'ParamMouthY'];
     for (const p of preferred) if (ids.includes(p)) return p;
 
+    // パターンマッチで検索: "mouth" かつ "open" を含むパラメータ
     const any = ids.find(id => /mouth/i.test(id) && /open/i.test(id)) || ids.find(id => /mouth/i.test(id));
     return any || 'ParamMouthOpenY';
   } catch {
@@ -73,11 +133,32 @@ function detectMouthParamId(model: any): string {
   }
 }
 
+/**
+ * Attack/Decayエンベロープを使った値のスムージング
+ * 
+ * @param current - 現在の値
+ * @param target - 目標値
+ * @param attack - 立ち上がり速度（0.0〜1.0、大きいほど速い）
+ * @param decay - 減衰速度（0.0〜1.0、大きいほど速い）
+ * @returns 次のフレームの値
+ * 
+ * 用途: 口パクの動きを滑らかにする
+ * - Attack: 音声が鳴り始めたときの口の開き方の速さ
+ * - Decay: 音が止まったときの口の閉じ方の速さ
+ * 
+ * カスタマイズポイント:
+ * - attack/decayの値を調整することで、キャラクターの口の動きの印象を変更可能
+ */
 function attackDecayStep(current: number, target: number, attack: number, decay: number) {
   const coeff = target > current ? attack : decay;
   return current + (target - current) * coeff;
 }
 
+/**
+ * Studio - メインコンポーネント
+ * 
+ * Live2Dキャラクター、音声合成、AIチャットを統合したUIを提供します。
+ */
 export default function Studio() {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const modelRef = useRef<any>(null);
